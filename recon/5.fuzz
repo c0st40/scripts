@@ -1,0 +1,74 @@
+#!/bin/bash
+
+TARGET="anbima.com.br"
+WORDLIST_SUBS="subdomains.txt"
+WORDLIST_PATHS="paths.txt"
+THREADS=80
+
+mkdir -p results
+
+echo "[+] Detectando tamanho base HTTP..."
+
+BASE_SIZE=$(curl -s -o /dev/null -w "%{size_download}" http://$TARGET)
+RANDOM_SIZE=$(curl -H "Host: $(openssl rand -hex 6).$TARGET" -s -o /dev/null -w "%{size_download}" http://$TARGET)
+
+echo "[+] Tamanho base: $BASE_SIZE"
+echo "[+] Tamanho wildcard: $RANDOM_SIZE"
+
+# Se wildcard detectado (resposta igual para host inválido)
+if [ "$BASE_SIZE" == "$RANDOM_SIZE" ]; then
+    echo "[!] Wildcard detectado — usando filtro por tamanho"
+    FILTER="-fs $BASE_SIZE"
+else
+    echo "[+] Sem wildcard detectado"
+    FILTER=""
+fi
+
+#################################################
+# 1️⃣ VHOST DISCOVERY
+#################################################
+
+echo "[+] Iniciando VHost discovery..."
+
+ffuf -w $WORDLIST_SUBS \
+  -u http://$TARGET \
+  -H "Host: FUZZ.$TARGET" \
+  $FILTER \
+  -mc 200,301,302,403 \
+  -t $THREADS \
+  -o results/vhosts.json -of json
+
+#################################################
+# 2️⃣ API SUBDOMAIN FUZZ
+#################################################
+
+echo "[+] Iniciando API subdomain fuzz..."
+
+ffuf -w $WORDLIST_SUBS \
+  -u https://FUZZ.api.$TARGET \
+  -mc 200,301,302,403 \
+  -t $THREADS \
+  -o results/api_prefix.json -of json
+
+ffuf -w $WORDLIST_SUBS \
+  -u https://api.FUZZ.$TARGET \
+  -mc 200,301,302,403 \
+  -t $THREADS \
+  -o results/api_namespace.json -of json
+
+#################################################
+# 3️⃣ PATH FUZZING
+#################################################
+
+echo "[+] Iniciando Path fuzzing..."
+
+ffuf -w $WORDLIST_PATHS \
+  -u https://$TARGET/FUZZ \
+  -mc 200,301,302,403 \
+  -t $THREADS \
+  -o results/path_fuzz.json -of json
+
+#################################################
+
+echo "[+] Fuzzing finalizado."
+echo "[+] Resultados em ./results/"

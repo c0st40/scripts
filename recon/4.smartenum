@@ -1,0 +1,98 @@
+#!/bin/bash
+
+INPUT="base_patterns.txt"
+OUTPUT="smart_wordlist.txt"
+
+echo "[+] Extraindo prefixos base..."
+cat $INPUT | sort -u > tmp_unique.txt
+
+echo "[+] Detectando ambientes..."
+ENVS=$(grep -E '^(dev|hml|prd|prod|homolog|qa|uat)$' tmp_unique.txt)
+echo "$ENVS" > tmp_envs.txt
+
+# Caso não existam explícitos, adiciona padrão comum
+if [ ! -s tmp_envs.txt ]; then
+  echo -e "dev\nhml\nprd\nqa\nuat" > tmp_envs.txt
+fi
+
+echo "[+] Detectando padrões numéricos finais..."
+grep -E '[0-9]+$' tmp_unique.txt > tmp_numeric.txt
+
+echo "[+] Extraindo raiz de padrões numéricos..."
+sed 's/[0-9]*$//' tmp_numeric.txt | sort -u > tmp_numeric_base.txt
+
+> $OUTPUT
+
+#########################################
+# 1️⃣ Gerar expansão numérica automática
+#########################################
+
+while read base; do
+  for i in $(seq -w 001 050); do
+    echo "${base}${i}" >> $OUTPUT
+  done
+done < tmp_numeric_base.txt
+
+#########################################
+# 2️⃣ Detectar padrão tipo pm03-1
+#########################################
+
+grep -E '^[a-zA-Z]+[0-9]+-[0-9]+$' tmp_unique.txt > tmp_pm.txt
+
+while read line; do
+  PREFIX=$(echo $line | sed -E 's/-[0-9]+$//')
+  for i in $(seq 1 20); do
+    echo "${PREFIX}-${i}" >> $OUTPUT
+  done
+done < tmp_pm.txt
+
+#########################################
+# 3️⃣ Detectar serviços base
+#########################################
+
+echo "[+] Detectando serviços principais..."
+awk -F'-' '{print $1}' tmp_unique.txt | sort | uniq -c | sort -nr | awk '$1 > 2 {print $2}' > tmp_services.txt
+
+#########################################
+# 4️⃣ Cruzar serviços com ambientes
+#########################################
+
+while read service; do
+  while read env; do
+    echo "${service}-${env}" >> $OUTPUT
+    echo "${env}-${service}" >> $OUTPUT
+  done < tmp_envs.txt
+done < tmp_services.txt
+
+#########################################
+# 5️⃣ Detectar padrão vpn-letra
+#########################################
+
+grep -E '^vpn-[a-z]$' tmp_unique.txt > /dev/null
+if [ $? -eq 0 ]; then
+  for i in {a..z}; do
+    echo "vpn-$i" >> $OUTPUT
+  done
+fi
+
+#########################################
+# 6️⃣ Detectar www variantes
+#########################################
+
+grep -E '^www[0-9]*$' tmp_unique.txt > /dev/null
+if [ $? -eq 0 ]; then
+  for i in $(seq 1 10); do
+    echo "www$i" >> $OUTPUT
+  done
+fi
+
+#########################################
+# Finalização
+#########################################
+
+sort -u $OUTPUT -o $OUTPUT
+rm tmp_*
+
+echo "[+] Wordlist inteligente gerada em: $OUTPUT"
+echo "[+] Total de entradas:"
+wc -l $OUTPUT

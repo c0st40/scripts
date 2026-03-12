@@ -1,0 +1,105 @@
+#!/bin/bash
+
+# ============================================
+# SUBDOMAIN HARVESTER v6
+# Output:
+#   - all_subs.txt
+#   - resolved.txt
+# ============================================
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+echo -e "${GREEN}====================================${NC}"
+echo -e "${GREEN} SUBDOMAIN HARVESTER v6${NC}"
+echo -e "${GREEN}====================================${NC}"
+
+read -p $'\nDigite um domínio (ex: target.com) OU arquivo .txt: ' INPUT
+
+if [[ -f "$INPUT" ]]; then
+    mapfile -t DOMAINS < <(grep -v '^$' "$INPUT" | sort -u)
+elif [[ "$INPUT" =~ \. ]]; then
+    DOMAINS=("$INPUT")
+else
+    echo -e "${RED}Entrada inválida.${NC}"
+    exit 1
+fi
+
+read -p $'\nModo (normal/stealth): ' MODE
+
+if [[ "$MODE" == "stealth" ]]; then
+    THREADS=3
+    TOOL_THREADS=25
+    echo -e "${YELLOW}Modo stealth ativado.${NC}"
+else
+    THREADS=8
+    TOOL_THREADS=100
+    echo -e "${GREEN}Modo normal ativado.${NC}"
+fi
+
+read -p $'\nDeseja adicionar cookies? (s/N): ' USECOOKIE
+
+if [[ "$USECOOKIE" =~ ^[Ss]$ ]]; then
+    read -p "Digite o cookie (ex: SESSION=xxxx): " COOKIE
+    COOKIE_HEADER="Cookie: $COOKIE"
+else
+    COOKIE_HEADER=""
+fi
+
+TMP=$(mktemp)
+
+run_passive() {
+
+    DOMAIN=$1
+
+    subfinder -d "$DOMAIN" -silent -all -t $TOOL_THREADS 2>/dev/null >> "$TMP"
+    assetfinder --subs-only "$DOMAIN" 2>/dev/null >> "$TMP"
+    findomain -t "$DOMAIN" -q 2>/dev/null >> "$TMP"
+    amass enum -passive -d "$DOMAIN" -norecursive -noalts 2>/dev/null >> "$TMP"
+    chaos -d "$DOMAIN" -silent 2>/dev/null >> "$TMP"
+
+    curl -s -H "$COOKIE_HEADER" \
+        "https://crt.sh/?q=%25.$DOMAIN&output=json" 2>/dev/null | \
+        jq -r '.[].name_value?' 2>/dev/null | \
+        sed 's/\*\.//g' | grep -i "\.$DOMAIN$" >> "$TMP"
+
+    curl -s "https://dns.bufferover.run/dns?q=.$DOMAIN" 2>/dev/null | \
+        jq -r '.FDNS_A[]?' 2>/dev/null | \
+        cut -d',' -f2 >> "$TMP"
+
+    curl -s "https://urlscan.io/api/v1/search/?q=domain:$DOMAIN" 2>/dev/null | \
+        jq -r '.results[].page.domain?' 2>/dev/null >> "$TMP"
+}
+
+PIDS=()
+
+for DOMAIN in "${DOMAINS[@]}"; do
+    while [ $(jobs -p | wc -l) -ge $THREADS ]; do sleep 1; done
+    run_passive "$DOMAIN" &
+    PIDS+=($!)
+done
+
+for PID in "${PIDS[@]}"; do wait $PID; done
+
+cat "$TMP" | \
+    tr '[:upper:]' '[:lower:]' | \
+    grep -E '^[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}$' | \
+    sort -u > all_subs.txt
+
+rm "$TMP"
+
+TOTAL=$(wc -l < all_subs.txt)
+
+echo -e "${GREEN}\nWordlist criada: all_subs.txt (${TOTAL} subs)${NC}"
+
+# ---------------- PUREDNS ----------------
+
+if [[ -f "resolvers.txt" ]]; then
+    echo -e "${GREEN}Iniciando resolução com PureDNS...${NC}"
+    cat all_subs.txt | puredns resolve -r resolvers.txt -w resolved.txt
+    echo -e "${GREEN}Resolução finalizada: resolved.txt${NC}"
+else
+    echo -e "${YELLOW}resolvers.txt não encontrado. Pulando resolução.${NC}"
+fi
